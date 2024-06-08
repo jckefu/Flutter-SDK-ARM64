@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [ main ]
   schedule:
-    - cron: 00 18 * * *
+    - cron: 00 16 * * *
   watch:
     types: [started]
 
@@ -14,93 +14,81 @@ on:
   workflow_dispatch:
 
 jobs:
-  Generate-Flutter-SDK:
+  build-flutter-engine:
     runs-on: ubuntu-latest
     steps:
     - name: Maximize build space
       uses: easimon/maximize-build-space@v4
       with:
-          root-reserve-mb: 512
-          swap-size-mb: 1024
+          root-reserve-mb: 2048
+          swap-size-mb: 4096
           remove-dotnet: 'true'
           remove-haskell: 'true'
           remove-android: 'true'
     - name: Checkout
       uses: actions/checkout@v2
-
     - name: Echo Free space
       run: |
           echo "Free space:"
           df -h
-    - name: Fetch zhzhzhy/Build_Flutter_Engine_ARM64 Github Release zip
-      uses: dsaltares/fetch-gh-release-asset@0.0.5
+    - name: Set up Python 3.x
+      uses: actions/setup-python@v3
       with:
-          repo: "zhzhzhy/Build_Flutter_Engine_ARM64"
-          version: "latest"
-          file: "linux_release_arm64.zip"
-          target: "linux_release_arm64.zip"
-    - name: Fetch zhzhzhy/Build_Flutter_Engine_ARM64 Github Debug Release zip
-      uses: dsaltares/fetch-gh-release-asset@0.0.5
-      with:
-          repo: "zhzhzhy/Build_Flutter_Engine_ARM64"
-          version: "latest"
-          file: "linux_debug_arm64.zip"
-          target: "linux_debug_arm64.zip"
-    - name: Fetch zhzhzhy/Build_Dart_ARM_SDK Github Release Asset
-      uses: dsaltares/fetch-gh-release-asset@0.0.5
-      with:
-          repo: "zhzhzhy/Build_Dart_ARM_SDK"
-          version: "latest"
-          file: "dart-sdk-linux-arm64.zip"
-          target: "dart-sdk-linux-arm64.zip"
-    - name: Get & Init Flutter-SDK
+        python-version: '3.x'
+    - name: Prepare Env
       run: |
-          git clone https://github.com/flutter/flutter.git --depth 1
-          export PATH="$PATH:`pwd`/flutter/bin"
-    - name: Unzip Release
+        sudo apt-get update
+        sudo apt-get install g++-aarch64-linux-gnu g++-arm-linux-gnueabihf
+        sudo apt-get install g++-multilib gcc-multilib
+        sudo apt-get install zip
+    - name: Get Resource
       run: |
-          export WORKDIR=`pwd`
-          ls $WORKDIR
-          unzip dart-sdk-linux-arm64.zip
-          unzip linux_release_arm64.zip
-          unzip linux_debug_arm64.zip
-          ls
-
-    - name: Assemble Flutter-SDK-ARM
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        export PATH="$PATH:$PWD/depot_tools"
+        mkdir flutter-engine
+        echo 'solutions = [
+        {
+         "managed": False,
+         "name": "src/flutter",
+         "url": "https://github.com/flutter/engine",
+         "custom_deps": {},
+         "deps_file": "DEPS",
+         "safesync_url": "",
+        },
+        ]' >> flutter-engine/.gclient
+        cd flutter-engine
+        gclient sync
+        cd src/flutter
+        git checkout 3.19.4
+        cd ../../
+    - name: Build Engine
       run: |
-        export PATH="$PATH:`pwd`/flutter/bin"
-        export WORKDIR=`pwd`
-        export flutter_engine_dir_debug="$WORKDIR/linux_release_arm64"
-        export flutter_engine_dir_release="$WORKDIR/linux_debug_arm64"
-        export dart_sdk_dir="$WORKDIR/ReleaseXARM64"
-        export flutter_sdk_dir="$WORKDIR/flutter"
-        rsync -avP $dart_sdk_dir/dart-sdk $flutter_sdk_dir/bin/cache/
-        mkdir -p $flutter_sdk_dir/bin/cache/artifacts/engine/common/flutter_patched_sdk/
-        rsync -avP $flutter_engine_dir_debug/flutter_patched_sdk $flutter_sdk_dir/bin/cache/artifacts/engine/common/flutter_patched_sdk/
-        mkdir -p $flutter_sdk_dir/bin/cache/artifacts/engine/linux-x64/
-        rsync -avP $flutter_engine_dir_debug/{flutter_linux,gen/const_finder.dart.snapshot,flutter_tester,font-subset,gen/frontend_server.dart.snapshot,icudtl.dat,libflutter_linux_gtk.so,gen/flutter/lib/snapshot/isolate_snapshot.bin,gen/flutter/lib/snapshot/vm_isolate_snapshot.bin} $flutter_sdk_dir/bin/cache/artifacts/engine/linux-x64/
-        mkdir -p $flutter_sdk_dir/bin/cache/artifacts/engine/common/flutter_patched_sdk_product/
-        rsync -avP $flutter_engine_dir_release/flutter_patched_sdk $flutter_sdk_dir/bin/cache/artifacts/engine/common/flutter_patched_sdk_product/
-        mkdir -p $flutter_sdk_dir/bin/cache/artifacts/engine/linux-x64-release/
-        rsync -avP $flutter_engine_dir_release/{flutter_linux,libflutter_linux_gtk.so} $flutter_sdk_dir/bin/cache/artifacts/engine/linux-x64-release/
-        mkdir -p $flutter_sdk_dir/bin/cache/artifacts/engine/linux-x64-release/
-        rsync -avP $flutter_engine_dir_release/clang_x64/gen_snapshot $flutter_sdk_dir/bin/cache/artifacts/engine/linux-x64-release/
-    - name: Zip SDK
+        export PATH="$PATH:$PWD/depot_tools"
+        cd flutter-engine/src
+        ls flutter/
+        ls flutter/tools
+        ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-prebuilt-dart-sdk --no-goma --runtime-mode release
+        ninja -C out/linux_release_arm64
+        ./flutter/tools/gn --target-os linux --linux-cpu arm64 --no-prebuilt-dart-sdk --no-goma --runtime-mode debug
+        ninja -C out/linux_debug_arm64
+    - name: Zip Engine
       run: |
+        cd flutter-engine/src/out
         ls
-        zip -q -r Flutter-SDK-ARM64.zip flutter
+        zip -q -r linux_release_arm64.zip linux_release_arm64
+        zip -q -r linux_debug_arm64.zip linux_debug_arm64
     - name: Get current date
       id: date
       run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
     - name: Test with environment variables
       run: echo $TAG_NAME - $RELEASE_TIME
       env:
-          TAG_NAME: Flutter-SDK
-          RELEASE_TIME: ${{ steps.date.outputs.date }}
-    - name: Release SDK
+          TAG_NAME: Flutter-ARM64
+          RELEASE_TIME: 3.19.4
+    - name: Release Engine
       uses: ncipollo/release-action@v1
       with:
-        artifacts: "Flutter-SDK-ARM64.zip"
-        tag: Flutter-SDK-${{ steps.date.outputs.date }}
+        artifacts: "flutter-engine/src/out/*.zip"
+        tag: Flutter-ARM64-3.19.4
         token: ${{ secrets.GH_TOKEN }}
         allowUpdates: true
